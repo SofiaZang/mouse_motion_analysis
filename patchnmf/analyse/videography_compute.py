@@ -204,7 +204,7 @@ def filter_twitches_only_post_active_mot(inds_twitches, inds_active_state, min_d
 
     return np.array(filtered_twitches)
 
-def remove_twitch_bursts(twitch_binary, framerate, min_interval=2):
+def remove_twitch_bursts(twitch_binary, framerate, min_interval=1):
     """
     Removes all twitches that occur within `min_interval` seconds of another twitch.
     Both twitches in a burst/close proximimity are excluded.
@@ -212,7 +212,7 @@ def remove_twitch_bursts(twitch_binary, framerate, min_interval=2):
     Parameters:
         twitch_binary (np.ndarray): Binary vector of twitch detections (1 = twitch, 0 = no twitch)
         fs (float): framerate (Hz)
-        min_interval (float): minimum interval required between twitches for those to be detected 
+        min_interval (float): minimum interval required between twitches for those to be detected (in sec)
     
     Returns:
         np.ndarray: filtered binary twitch array 
@@ -224,15 +224,40 @@ def remove_twitch_bursts(twitch_binary, framerate, min_interval=2):
     for i in range(len(twitch_indices) - 1):
         curr_idx = twitch_indices[i]
         next_idx = twitch_indices[i + 1]
-        interval = (next_idx - curr_idx) / framerate
+        interval = (next_idx - curr_idx) / framerate # in sec 
         
         if interval < min_interval:
             to_remove.add(curr_idx)
             to_remove.add(next_idx)
     
-    cleaned = np.copy(twitch_binary)
-    cleaned[list(to_remove)] = 0
-    return cleaned
+    filtered_twitches = np.copy(twitch_binary)
+    filtered_twitches[list(to_remove)] = 0
+    return filtered_twitches 
+
+def filter_bursty_twitches(inds_twitches, min_frame_gap=3):
+    """
+    Keeps only the first twitch in bursts occurring within `min_frame_gap` frames.
+    
+    Parameters:
+        inds_twitches (list of list of int): Each inner list contains frame indices for a twitch.
+        min_frame_gap (int): Minimum allowed gap between two twitch events (in frames).
+        
+    Returns:
+        list of list of int: Filtered list of twitch events (same structure).
+    """
+    if not inds_twitches:
+        return []
+
+    filtered = [inds_twitches[0]]
+    last_kept = inds_twitches[0][0]  # take the first index of the first twitch
+
+    for twitch in inds_twitches[1:]:
+        current_onset = twitch[0]  # first index of current twitch
+        if current_onset - last_kept >= min_frame_gap:
+            filtered.append(twitch)
+            last_kept = current_onset
+
+    return filtered
 
 def binarise_twitch(motion_energy, twitch_segments):
 
@@ -333,3 +358,13 @@ def compute_corrs(behaviour, pcs):
         corr = np.corrcoef(gaussian_filter1d(pcs[i,:], sigma=3), gaussian_filter1d(behaviour, sigma=3))[0,1]
         beh_pcs_coupling.append(corr)
     return beh_pcs_coupling
+
+def get_onsets(bin_motion):
+    onsets = np.where((bin_motion[1:] == 1) & (bin_motion[:-1] == 0))[0] + 1 #[0] specific to stcuture of array
+    if bin_motion[0] == 1:  
+        onsets = np.insert(onsets, 0, 0) # solves issue with twitch detected at first frames  
+    return onsets
+    
+def get_offsets(bin_motion):
+    offsets = np.where((bin_motion[1:] == 0) & (bin_motion[:-1] == 1))[0] + 1 #[0] specific to stcuture of array
+    return offsets  
