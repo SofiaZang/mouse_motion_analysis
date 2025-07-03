@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QPushButton, QVBoxLayout, QHBoxLayout,
     QLabel, QSlider, QFileDialog, QSpinBox, QDoubleSpinBox, 
     QGroupBox, QGridLayout, QTextEdit, QComboBox, QCheckBox,
-    QMessageBox, QProgressBar, QSplitter
+    QMessageBox, QProgressBar, QSplitter, QLineEdit
 )
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
@@ -34,6 +34,7 @@ class DraggableTimeline(FigureCanvas):
         self.onsets = []
         self.onset_types = {}  # 'active' or 'twitch'
         self.onset_validations = {}  # 'accepted', 'rejected', 'edited'
+        self.event_offsets = {}  # Store offset frames for events
         
         self.timeline_line = None
         self.dragging = False
@@ -70,11 +71,12 @@ class DraggableTimeline(FigureCanvas):
         self.timeline_line = self.ax.axvline(self.current_frame, color='red', linewidth=2, alpha=0.8)
         self.draw()
         
-    def plot_motion_energy(self, motion_energy, onsets=None, onset_types=None):
+    def plot_motion_energy(self, motion_energy, onsets=None, onset_types=None, event_offsets=None):
         self.motion_energy = motion_energy
         self.total_frames = len(motion_energy)
         self.onsets = onsets or []
         self.onset_types = onset_types or {}
+        self.event_offsets = event_offsets or {}
         
         self.ax.clear()
         
@@ -86,6 +88,7 @@ class DraggableTimeline(FigureCanvas):
             for onset in self.onsets:
                 onset_type = self.onset_types.get(onset, 'unknown')
                 validation = self.onset_validations.get(onset, 'pending')
+                offset = self.event_offsets.get(onset, onset)  # Default to onset if no offset
                 
                 if onset_type == 'active':
                     color = 'blue'
@@ -103,7 +106,14 @@ class DraggableTimeline(FigureCanvas):
                 elif validation == 'accepted':
                     alpha *= 1.2
                     
+                # Plot onset line
                 self.ax.axvline(onset, color=color, linestyle='--', alpha=alpha, linewidth=2)
+                
+                # Plot offset line if different from onset
+                if offset != onset:
+                    self.ax.axvline(offset, color=color, linestyle=':', alpha=alpha, linewidth=2)
+                    # Fill area between onset and offset
+                    self.ax.axvspan(onset, offset, alpha=0.2, color=color)
                 
         self.ax.set_xlim(0, self.total_frames)
         if motion_energy is not None:
@@ -117,19 +127,39 @@ class DraggableTimeline(FigureCanvas):
         
     def set_onset_validation(self, onset, validation):
         self.onset_validations[onset] = validation
-        self.plot_motion_energy(self.motion_energy, self.onsets, self.onset_types)
+        self.plot_motion_energy(self.motion_energy, self.onsets, self.onset_types, self.event_offsets)
+        
+    def add_event(self, onset, event_type, offset=None):
+        """Add a new event to the timeline"""
+        self.onsets.append(onset)
+        self.onset_types[onset] = event_type
+        if offset is not None:
+            self.event_offsets[onset] = offset
+        self.plot_motion_energy(self.motion_energy, self.onsets, self.onset_types, self.event_offsets)
+        
+    def remove_event(self, onset):
+        """Remove an event from the timeline"""
+        if onset in self.onsets:
+            self.onsets.remove(onset)
+        if onset in self.onset_types:
+            del self.onset_types[onset]
+        if onset in self.onset_validations:
+            del self.onset_validations[onset]
+        if onset in self.event_offsets:
+            del self.event_offsets[onset]
+        self.plot_motion_energy(self.motion_energy, self.onsets, self.onset_types, self.event_offsets)
 
 class MotionAnnotator(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Enhanced Motion Onset Annotator")
-        self.setGeometry(100, 100, 1400, 900)
+        self.setGeometry(100, 100, 1600, 1000)
         
         # Data storage
         self.video_path = None
         self.cap = None
         self.total_frames = 0
-        self.fps = 30
+        self.fps = 15
         self.current_frame = 0
         self.playback_speed = 1.0
         
@@ -213,6 +243,51 @@ class MotionAnnotator(QWidget):
         self.frame_info_label = QLabel("Frame: 0 / 0")
         left_panel.addWidget(self.frame_info_label)
         
+        # Manual event addition
+        manual_event_group = QGroupBox("Manual Event Addition")
+        manual_layout = QVBoxLayout()
+        
+        # Event type selection
+        event_type_layout = QHBoxLayout()
+        event_type_layout.addWidget(QLabel("Event Type:"))
+        self.event_type_combo = QComboBox()
+        self.event_type_combo.addItems(["twitch", "active", "complex"])
+        event_type_layout.addWidget(self.event_type_combo)
+        manual_layout.addLayout(event_type_layout)
+        
+        # Onset/Offset controls
+        onset_offset_layout = QGridLayout()
+        
+        self.onset_spinbox = QSpinBox()
+        self.onset_spinbox.setRange(0, 999999)
+        self.onset_spinbox.valueChanged.connect(self.update_offset_range)
+        
+        self.offset_spinbox = QSpinBox()
+        self.offset_spinbox.setRange(0, 999999)
+        
+        self.set_current_onset_btn = QPushButton("Set Current Frame as Onset")
+        self.set_current_onset_btn.clicked.connect(self.set_current_as_onset)
+        
+        self.set_current_offset_btn = QPushButton("Set Current Frame as Offset")
+        self.set_current_offset_btn.clicked.connect(self.set_current_as_offset)
+        
+        onset_offset_layout.addWidget(QLabel("Onset Frame:"), 0, 0)
+        onset_offset_layout.addWidget(self.onset_spinbox, 0, 1)
+        onset_offset_layout.addWidget(self.set_current_onset_btn, 0, 2)
+        onset_offset_layout.addWidget(QLabel("Offset Frame:"), 1, 0)
+        onset_offset_layout.addWidget(self.offset_spinbox, 1, 1)
+        onset_offset_layout.addWidget(self.set_current_offset_btn, 1, 2)
+        
+        manual_layout.addLayout(onset_offset_layout)
+        
+        # Add event button
+        self.add_event_btn = QPushButton("➕ Add Event")
+        self.add_event_btn.clicked.connect(self.add_manual_event)
+        manual_layout.addWidget(self.add_event_btn)
+        
+        manual_event_group.setLayout(manual_layout)
+        left_panel.addWidget(manual_event_group)
+        
         # Right panel - Motion energy and annotation
         right_panel = QVBoxLayout()
         
@@ -262,14 +337,17 @@ class MotionAnnotator(QWidget):
         self.accept_btn = QPushButton("✓ Accept")
         self.reject_btn = QPushButton("✗ Reject")
         self.edit_btn = QPushButton("✏ Edit/Move")
+        self.delete_btn = QPushButton("🗑 Delete")
         
         self.accept_btn.clicked.connect(lambda: self.validate_onset('accepted'))
         self.reject_btn.clicked.connect(lambda: self.validate_onset('rejected'))
         self.edit_btn.clicked.connect(self.enable_edit_mode)
+        self.delete_btn.clicked.connect(self.delete_current_onset)
         
         validation_layout.addWidget(self.accept_btn)
         validation_layout.addWidget(self.reject_btn)
         validation_layout.addWidget(self.edit_btn)
+        validation_layout.addWidget(self.delete_btn)
         onset_layout.addLayout(validation_layout)
         
         # Edit mode controls
@@ -329,7 +407,7 @@ class MotionAnnotator(QWidget):
         right_widget.setLayout(right_panel)
         splitter.addWidget(right_widget)
         
-        splitter.setSizes([600, 800])
+        splitter.setSizes([700, 900])
         
         main_layout.addWidget(splitter)
         self.setLayout(main_layout)
@@ -361,6 +439,10 @@ class MotionAnnotator(QWidget):
             self.show_frame(self.current_frame)
             self.update_frame_info()
             
+            # Update onset/offset ranges
+            self.onset_spinbox.setMaximum(self.total_frames - 1)
+            self.offset_spinbox.setMaximum(self.total_frames - 1)
+            
     def load_motion_energy(self):
         fname, _ = QFileDialog.getOpenFileName(self, 'Load Motion Energy', '', 'CSV/Excel (*.csv *.xlsx *.npy)')
         if fname:
@@ -373,36 +455,269 @@ class MotionAnnotator(QWidget):
                 df = pd.read_excel(fname)
                 self.motion_energy = df.select_dtypes(include=[np.number]).iloc[:, 0].values
                 
-            self.timeline_canvas.plot_motion_energy(self.motion_energy, self.onsets, self.onset_types)
+            # Pad to divisible by 5 and average
+            self.prepare_motion_energy()
+            self.timeline_canvas.plot_motion_energy(self.motion_energy, self.onsets, self.onset_types, self.timeline_canvas.event_offsets)
+            
+    def prepare_motion_energy(self):
+        """Pad motion energy to divisible by 5 and average"""
+        if self.motion_energy is None:
+            return
+            
+        # Pad to make divisible by 5
+        remainder = len(self.motion_energy) % 5
+        if remainder != 0:
+            padding_needed = 5 - remainder
+            self.motion_energy = np.pad(self.motion_energy, (0, padding_needed), mode='edge')
+            
+        # Reshape and average
+        new_length = len(self.motion_energy) // 5
+        self.motion_energy = self.motion_energy.reshape(new_length, 5).mean(axis=1)
+        
+        # Update total frames
+        self.total_frames = len(self.motion_energy)
+        self.frame_slider.setMaximum(self.total_frames - 1)
+        self.onset_spinbox.setMaximum(self.total_frames - 1)
+        self.offset_spinbox.setMaximum(self.total_frames - 1)
             
     def load_classifications(self):
-        fname, _ = QFileDialog.getOpenFileName(self, 'Load Classifications', '', 'JSON (*.json)')
+        fname, _ = QFileDialog.getOpenFileName(self, 'Load Classifications', '', 'JSON/CSV/Excel (*.json *.csv *.xlsx)')
         if fname:
-            with open(fname, 'r') as f:
-                self.classified_events = json.load(f)
+            if fname.endswith('.json'):
+                self.load_json_classifications(fname)
+            else:
+                self.load_excel_classifications(fname)
                 
-            # Process classifications
-            self.curated_events = {k: [list(pair) for pair in v] for k, v in self.classified_events.items()}
+    def load_json_classifications(self, fname):
+        """Load classifications from JSON format"""
+        with open(fname, 'r') as f:
+            self.classified_events = json.load(f)
             
-            # Extract onsets and their types
+        # Process classifications
+        self.curated_events = {k: [list(pair) for pair in v] for k, v in self.classified_events.items()}
+        
+        # Extract onsets and their types
+        self.onsets = []
+        self.onset_types = {}
+        
+        for event_type, events in self.curated_events.items():
+            for onset, _ in events:
+                self.onsets.append(onset)
+                self.onset_types[onset] = event_type
+                
+        self.onsets = sorted(self.onsets)
+        self.current_onset_idx = 0
+        
+        # Update timeline
+        self.timeline_canvas.plot_motion_energy(self.motion_energy, self.onsets, self.onset_types, self.timeline_canvas.event_offsets)
+        
+        # Go to first onset
+        if self.onsets:
+            self.goto_onset(0)
+            
+    def load_excel_classifications(self, fname):
+        """Load classifications from Excel/CSV format with SLEAP-like structure"""
+        try:
+            if fname.endswith('.csv'):
+                df = pd.read_csv(fname)
+            else:
+                df = pd.read_excel(fname)
+                
+            print(f"Loaded CSV with shape: {df.shape}")
+            print(f"Columns: {list(df.columns)}")
+            
+            # Check if this is the expected format
+            expected_columns = ['frame_idx', 'motion_energy', 'active_motion_onset', 'active_motion_offset', 
+                               'twitch_onset', 'twitch_offset', 'complex_motion_onset', 'complex_motion_offset']
+            
+            missing_columns = [col for col in expected_columns if col not in df.columns]
+            if missing_columns:
+                QMessageBox.warning(self, "Warning", f"Missing columns: {missing_columns}\nExpected: {expected_columns}")
+                return
+                
+            # Load motion energy if not already loaded
+            if self.motion_energy is None:
+                self.motion_energy = df['motion_energy'].values.astype(np.float64)
+                self.prepare_motion_energy()
+            else:
+                # Check if motion energy lengths match
+                csv_length = len(df)
+                me_length = len(self.motion_energy)
+                if csv_length != me_length:
+                    QMessageBox.warning(self, "Warning", f"Motion energy length mismatch: CSV has {csv_length} frames, loaded motion energy has {me_length} frames")
+                    return
+                
+            # Extract events from onset/offset arrays
             self.onsets = []
             self.onset_types = {}
+            self.timeline_canvas.event_offsets = {}
             
-            for event_type, events in self.curated_events.items():
-                for onset, _ in events:
-                    self.onsets.append(onset)
-                    self.onset_types[onset] = event_type
-                    
+            # Process active motion events
+            active_onsets = np.where(df['active_motion_onset'] == 1)[0]
+            active_offsets = np.where(df['active_motion_offset'] == 1)[0]
+            print(f"Found {len(active_onsets)} active onsets and {len(active_offsets)} active offsets")
+            print(f"Active onsets: {active_onsets[:10]}...")  # Show first 10
+            
+            for onset in active_onsets:
+                # Find corresponding offset
+                offset = self.find_corresponding_offset(onset, active_offsets)
+                self.onsets.append(onset)
+                self.onset_types[onset] = 'active'
+                self.timeline_canvas.event_offsets[onset] = offset
+                print(f"Added active event: onset={onset}, offset={offset}")
+                
+            # Process twitch events
+            twitch_onsets = np.where(df['twitch_onset'] == 1)[0]
+            twitch_offsets = np.where(df['twitch_offset'] == 1)[0]
+            print(f"Found {len(twitch_onsets)} twitch onsets and {len(twitch_offsets)} twitch offsets")
+            print(f"Twitch onsets: {twitch_onsets[:10]}...")  # Show first 10
+            
+            for onset in twitch_onsets:
+                # Find corresponding offset
+                offset = self.find_corresponding_offset(onset, twitch_offsets)
+                self.onsets.append(onset)
+                self.onset_types[onset] = 'twitch'
+                self.timeline_canvas.event_offsets[onset] = offset
+                print(f"Added twitch event: onset={onset}, offset={offset}")
+                
+            # Process complex motion events
+            complex_onsets = np.where(df['complex_motion_onset'] == 1)[0]
+            complex_offsets = np.where(df['complex_motion_offset'] == 1)[0]
+            print(f"Found {len(complex_onsets)} complex onsets and {len(complex_offsets)} complex offsets")
+            
+            for onset in complex_onsets:
+                # Find corresponding offset
+                offset = self.find_corresponding_offset(onset, complex_offsets)
+                self.onsets.append(onset)
+                self.onset_types[onset] = 'complex'
+                self.timeline_canvas.event_offsets[onset] = offset
+                
+            # Sort onsets
             self.onsets = sorted(self.onsets)
             self.current_onset_idx = 0
             
+            print(f"Total events loaded: {len(self.onsets)}")
+            print(f"Event types: {set(self.onset_types.values())}")
+            print(f"Onset range: {min(self.onsets) if self.onsets else 'N/A'} to {max(self.onsets) if self.onsets else 'N/A'}")
+            print(f"Motion energy length: {len(self.motion_energy)}")
+            
+            # Check for out-of-range onsets
+            if self.onsets:
+                max_onset = max(self.onsets)
+                if max_onset >= len(self.motion_energy):
+                    QMessageBox.warning(self, "Warning", f"Some onsets ({max_onset}) are beyond motion energy length ({len(self.motion_energy)})")
+                    # Filter out out-of-range onsets
+                    valid_onsets = [onset for onset in self.onsets if onset < len(self.motion_energy)]
+                    self.onsets = valid_onsets
+                    print(f"Filtered to {len(self.onsets)} valid onsets")
+            
+            # Create curated events structure
+            self.curated_events = {}
+            for onset in self.onsets:
+                event_type = self.onset_types[onset]
+                if event_type not in self.curated_events:
+                    self.curated_events[event_type] = []
+                self.curated_events[event_type].append([onset, 1])  # 1 indicates detected by algorithm
+                
             # Update timeline
-            self.timeline_canvas.plot_motion_energy(self.motion_energy, self.onsets, self.onset_types)
+            self.timeline_canvas.plot_motion_energy(self.motion_energy, self.onsets, self.onset_types, self.timeline_canvas.event_offsets)
             
             # Go to first onset
             if self.onsets:
                 self.goto_onset(0)
                 
+            QMessageBox.information(self, "Success", f"Loaded {len(self.onsets)} events from {fname}")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load CSV file: {str(e)}")
+            print(f"Error loading CSV: {e}")
+            import traceback
+            traceback.print_exc()
+        
+    def find_corresponding_offset(self, onset, offset_indices):
+        """Find the corresponding offset for a given onset"""
+        # Find the next offset after the onset
+        next_offsets = offset_indices[offset_indices > onset]
+        if len(next_offsets) > 0:
+            return next_offsets[0]
+        else:
+            # If no offset found, use onset + 1 frame
+            return onset + 1
+        
+    def set_current_as_onset(self):
+        """Set current frame as onset"""
+        self.onset_spinbox.setValue(self.current_frame)
+        
+    def set_current_as_offset(self):
+        """Set current frame as offset"""
+        self.offset_spinbox.setValue(self.current_frame)
+        
+    def update_offset_range(self):
+        """Update offset range to be >= onset"""
+        onset = self.onset_spinbox.value()
+        self.offset_spinbox.setMinimum(onset)
+        if self.offset_spinbox.value() < onset:
+            self.offset_spinbox.setValue(onset)
+            
+    def add_manual_event(self):
+        """Add a manually specified event"""
+        onset = self.onset_spinbox.value()
+        offset = self.offset_spinbox.value()
+        event_type = self.event_type_combo.currentText()
+        
+        if onset >= offset:
+            QMessageBox.warning(self, "Warning", "Onset must be less than offset")
+            return
+            
+        # Add to timeline
+        self.timeline_canvas.add_event(onset, event_type, offset)
+        
+        # Add to data structures
+        self.onsets.append(onset)
+        self.onset_types[onset] = event_type
+        
+        # Sort onsets
+        self.onsets = sorted(self.onsets)
+        
+        # Update curated events
+        if event_type not in self.curated_events:
+            self.curated_events[event_type] = []
+        self.curated_events[event_type].append([onset, 1])  # 1 indicates valid event
+        
+        # Go to the new event
+        new_idx = self.onsets.index(onset)
+        self.goto_onset(new_idx)
+        
+        QMessageBox.information(self, "Success", f"Added {event_type} event from frame {onset} to {offset}")
+        
+    def delete_current_onset(self):
+        """Delete the currently selected onset"""
+        if not self.onsets:
+            return
+            
+        current_onset = self.onsets[self.current_onset_idx]
+        
+        # Remove from timeline
+        self.timeline_canvas.remove_event(current_onset)
+        
+        # Remove from data structures
+        self.onsets.remove(current_onset)
+        if current_onset in self.onset_types:
+            del self.onset_types[current_onset]
+            
+        # Remove from curated events
+        for event_type, events in self.curated_events.items():
+            self.curated_events[event_type] = [event for event in events if event[0] != current_onset]
+            
+        # Update current index
+        if self.onsets:
+            if self.current_onset_idx >= len(self.onsets):
+                self.current_onset_idx = len(self.onsets) - 1
+            self.goto_onset(self.current_onset_idx)
+        else:
+            self.current_onset_idx = 0
+            self.update_onset_info()
+            
     def play(self):
         if self.cap is not None:
             interval = int(1000 / (self.fps * self.playback_speed))
@@ -499,8 +814,11 @@ class MotionAnnotator(QWidget):
         current_onset = self.onsets[self.current_onset_idx]
         onset_type = self.onset_types.get(current_onset, 'unknown')
         validation = self.timeline_canvas.onset_validations.get(current_onset, 'pending')
+        offset = self.timeline_canvas.event_offsets.get(current_onset, current_onset)
         
         info_text = f"Onset {self.current_onset_idx + 1}/{len(self.onsets)}: Frame {current_onset}"
+        if offset != current_onset:
+            info_text += f" to {offset}"
         info_text += f" | Type: {onset_type} | Status: {validation}"
         
         self.onset_info_label.setText(info_text)
@@ -558,7 +876,7 @@ class MotionAnnotator(QWidget):
                     break
                     
         # Update timeline
-        self.timeline_canvas.plot_motion_energy(self.motion_energy, self.onsets, self.onset_types)
+        self.timeline_canvas.plot_motion_energy(self.motion_energy, self.onsets, self.onset_types, self.timeline_canvas.event_offsets)
         
         # Go to the updated onset
         self.goto_onset(self.onsets.index(new_frame))
@@ -599,13 +917,15 @@ Performance Metrics:
             corrected_events[event_type] = []
             for onset, _ in events:
                 validation = self.timeline_canvas.onset_validations.get(onset, 'pending')
+                offset = self.timeline_canvas.event_offsets.get(onset, onset)
+                
                 if validation == 'accepted':
-                    corrected_events[event_type].append([onset, 1])
+                    corrected_events[event_type].append([onset, offset, 1])  # Include offset
                 elif validation == 'rejected':
-                    corrected_events[event_type].append([onset, 0])
+                    corrected_events[event_type].append([onset, offset, 0])
                 else:
                     # Keep pending onsets as is
-                    corrected_events[event_type].append([onset, 1])
+                    corrected_events[event_type].append([onset, offset, 1])
                     
         # Save to file
         fname, _ = QFileDialog.getSaveFileName(self, 'Save Curated Onsets', '', 'JSON (*.json)')
