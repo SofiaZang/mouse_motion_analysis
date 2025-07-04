@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QPushButton, QVBoxLayout, QHBoxLayout,
     QLabel, QSlider, QFileDialog, QSpinBox, QDoubleSpinBox, 
     QGroupBox, QGridLayout, QTextEdit, QComboBox, QCheckBox,
-    QMessageBox, QProgressBar, QSplitter, QLineEdit
+    QMessageBox, QProgressBar, QSplitter, QLineEdit, QSizePolicy
 )
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QIntValidator, QIcon
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
@@ -78,8 +78,6 @@ class DraggableTimeline(FigureCanvas):
         
     def plot_motion_energy(self, motion_energy, onsets=None, onset_types=None, event_offsets=None, event_status=None):
         import numpy as np
-        self.fig.set_size_inches(30, 5)
-        self.fig.set_dpi(200)
 
         self.motion_energy = motion_energy
         self.total_frames = len(motion_energy)
@@ -89,63 +87,58 @@ class DraggableTimeline(FigureCanvas):
         self.event_status = event_status or {}
 
         self.ax.clear()
+        self.ax.plot(np.arange(self.total_frames), self.motion_energy, color='blue', linewidth=1)
 
-        frames = np.arange(self.total_frames)
-        motion_signal_norm = (motion_energy - np.min(motion_energy)) / (np.max(motion_energy) - np.min(motion_energy))
-        self.ax.plot(frames, motion_signal_norm, color='blue', linewidth=0.3)
-
+        # Plot onset-to-offset spans
         for onset in self.onsets:
-            onset_type = self.onset_types.get(onset, 'unknown')
+            onset_type = self.onset_types.get(onset, '')
             offset = self.event_offsets.get(onset, onset)
-            if onset_type == 'active':
-                self.ax.axvspan(onset, offset, color='orange', alpha=0.3)
-            elif onset_type == 'twitch':
-                self.ax.axvspan(onset, onset+2, color='purple', alpha=0.7)
+            status = self.event_status.get(onset, '')
+            alpha = 1.0 if status == 'accepted' else 0.4
+            
+            if onset_type == 'twitch':
+                self.ax.axvspan(onset, offset, color='purple', alpha=alpha)
+            elif onset_type == 'active':
+                self.ax.axvspan(onset, offset, color='yellow', alpha=alpha)
 
-        # Add validation markers as small colored points
+        # Add validation markers as bullet points on top
         for onset in self.onsets:
             validation = self.onset_validations.get(onset, 'pending')
             if validation == 'accepted':
-                # Small green dot for accepted
-                self.ax.plot(onset, 1.08, 'o', color='green', markersize=5)
+                # Green bullet for accepted
+                self.ax.plot(onset, max(self.motion_energy) * 1.05, 'o', color='green', markersize=6)
             elif validation == 'rejected':
-                # Small red dot for rejected
-                self.ax.plot(onset, 1.08, 'o', color='red', markersize=5)
+                # Red bullet for rejected
+                self.ax.plot(onset, max(self.motion_energy) * 1.05, 'o', color='red', markersize=6)
             elif validation == 'edited':
-                # Small orange dot for edited
-                self.ax.plot(onset, 1.08, 'o', color='orange', markersize=5)
+                # Orange bullet for edited
+                self.ax.plot(onset, max(self.motion_energy) * 1.05, 'o', color='orange', markersize=6)
 
-        # Set limits LAST, after all artists are added
         self.ax.set_xlim(0, max(self.total_frames, 1000))
-        self.ax.set_ylim(0, 1.2)  # Increased ylim to accommodate markers
+        self.ax.set_ylim(0, max(self.motion_energy) * 1.2)  # Increased ylim to accommodate bullets
         self.ax.set_ylabel("motion_energy", fontsize=7)
         self.ax.set_xlabel("Frame", fontsize=7)
         self.ax.set_title("classified motion", fontsize=9)
         self.ax.set_yticks([])
         self.ax.tick_params(axis='x', labelsize=6)
+
         self.fig.tight_layout()
         self.fig.canvas.draw_idle()
         self.update_timeline()
         
     def plot_motion_energy_preserve_view(self, *args, **kwargs):
-        # Store current view limits
-        xlim = self.ax.get_xlim()
-        ylim = self.ax.get_ylim()
         self.plot_motion_energy(*args, **kwargs)
-        # Restore view limits
-        self.ax.set_xlim(xlim)
-        self.ax.set_ylim(ylim)
         self.draw()
 
     def set_onset_validation(self, onset, validation):
         # Store current view limits
-        xlim = self.ax.get_xlim()
-        ylim = self.ax.get_ylim()
+        # xlim = self.ax.get_xlim()
+        # ylim = self.ax.get_ylim()
         self.onset_validations[onset] = validation
         self.plot_motion_energy_preserve_view(self.motion_energy, self.onsets, self.onset_types, self.event_offsets, self.event_status)
         # Restore view limits
-        self.ax.set_xlim(xlim)
-        self.ax.set_ylim(ylim)
+        # self.ax.set_xlim(xlim)
+        # self.ax.set_ylim(ylim)
         self.draw()
         
     def add_event(self, onset, event_type, offset=None):
@@ -225,8 +218,6 @@ class MotionAnnotator(QWidget):
         self.performance_metrics = {
             'true_positives': 0,
             'false_positives': 0,
-            'true_negatives': 0,
-            'false_negatives': 0
         }
         
         self.init_ui()
@@ -279,6 +270,11 @@ class MotionAnnotator(QWidget):
         # Frame info
         self.frame_info_label = QLabel("Frame: 0 / 0")
         left_panel.addWidget(self.frame_info_label)
+        
+        # Add onset status bar below video
+        self.onset_status_label = QLabel("No onset at current frame")
+        self.onset_status_label.setStyleSheet("background-color: lightgray; padding: 5px; border: 1px solid gray;")
+        left_panel.addWidget(self.onset_status_label)
 
         # Manual event addition
         manual_event_group = QGroupBox("Manual Event Addition")
@@ -317,6 +313,7 @@ class MotionAnnotator(QWidget):
         timeline_group = QGroupBox("Motion Energy Timeline")
         timeline_layout = QVBoxLayout()
         self.timeline_canvas = DraggableTimeline()
+        self.timeline_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.timeline_canvas.timeline_moved.connect(self.timeline_frame_changed)
         timeline_layout.addWidget(self.timeline_canvas)
         
@@ -356,7 +353,7 @@ class MotionAnnotator(QWidget):
         filter_layout.addWidget(self.onset_filter_combo)
         filter_layout.addWidget(QLabel("Event status"))
         self.status_filter_combo = QComboBox()
-        self.status_filter_combo.addItems(["All", "Pending", "Accepted", "Rejected"])
+        self.status_filter_combo.addItems(["All", "Editing", "Pending", "Accepted", "Rejected"])
         self.status_filter_combo.currentIndexChanged.connect(self.update_onset_filter)
         filter_layout.addWidget(self.status_filter_combo)
         onset_layout.addLayout(filter_layout)
@@ -793,6 +790,13 @@ class MotionAnnotator(QWidget):
         if not ret:
             return
             
+        # Check if current frame is an onset and add text overlay
+        onset_type = self.onset_types.get(frame_num, None)
+        if onset_type:
+            # Add text overlay on video frame
+            text = f"Frame {frame_num}: {onset_type.upper()}"
+            cv2.putText(frame, text, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+            
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = frame.shape
         bytes_per_line = ch * w
@@ -804,6 +808,7 @@ class MotionAnnotator(QWidget):
         self.video_label.setPixmap(scaled_pixmap)
         
         self.update_frame_info()
+        self.update_onset_status()
         
     def slider_moved(self, value):
         self.current_frame = value
@@ -1144,6 +1149,20 @@ Performance Score:
         ax.set_xlim(0, max(self.timeline_canvas.total_frames, 1000))
         ax.set_ylim(0, 1.2)
         self.timeline_canvas.draw()
+
+    def update_onset_status(self):
+        """Update the onset status bar with current frame info"""
+        onset_type = self.onset_types.get(self.current_frame, None)
+        if onset_type:
+            self.onset_status_label.setText(f"Frame {self.current_frame}: {onset_type.upper()} ONSET")
+            # Color code based on onset type
+            if onset_type == 'twitch':
+                self.onset_status_label.setStyleSheet("background-color: purple; color: white; padding: 5px; border: 1px solid gray; font-weight: bold;")
+            elif onset_type == 'active':
+                self.onset_status_label.setStyleSheet("background-color: yellow; color: black; padding: 5px; border: 1px solid gray; font-weight: bold;")
+        else:
+            self.onset_status_label.setText(f"Frame {self.current_frame}: No onset")
+            self.onset_status_label.setStyleSheet("background-color: lightgray; padding: 5px; border: 1px solid gray;")
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
