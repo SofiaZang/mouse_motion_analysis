@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import os
 from PyQt5.QtWidgets import QStyle
+import csv
 
 class DraggableTimeline(FigureCanvas):
     """Custom matplotlib canvas with draggable timeline"""
@@ -346,8 +347,8 @@ class MotionAnnotator(QWidget):
         timeline_group.setLayout(timeline_layout)
         onset_group = QGroupBox("Onset Navigation & Validation")
         onset_layout = QVBoxLayout()
-        # Add filter combo boxes with titles
-        filter_layout = QVBoxLayout()
+        # Add filter combo boxes side by side
+        filter_layout = QHBoxLayout()
         filter_layout.addWidget(QLabel("Event type"))
         self.onset_filter_combo = QComboBox()
         self.onset_filter_combo.addItems(["All", "Active", "Twitch"])
@@ -402,7 +403,7 @@ class MotionAnnotator(QWidget):
         onset_group.setLayout(onset_layout)
         save_group = QGroupBox("Save & Export")
         save_layout = QHBoxLayout()
-        self.save_curated_btn = QPushButton("Save Curated Onsets")
+        self.save_curated_btn = QPushButton("Save Validation")
         self.save_metrics_btn = QPushButton("Save Performance Metrics")
         self.save_curated_btn.clicked.connect(self.save_curated_onsets)
         self.save_metrics_btn.clicked.connect(self.save_performance_metrics)
@@ -997,30 +998,38 @@ Performance Score:
         if not self.curated_events:
             QMessageBox.warning(self, "Warning", "No onsets to save")
             return
-            
-        # Create corrected onsets based on validation
-        corrected_events = {}
-        
+
+        # Create a flat list of events with 5 columns each
+        export_events = []
         for event_type, events in self.curated_events.items():
-            corrected_events[event_type] = []
-            for onset, _ in events:
-                validation = self.timeline_canvas.onset_validations.get(onset, 'pending')
-                offset = self.timeline_canvas.event_offsets.get(onset, onset)
-                
-                if validation == 'accepted':
-                    corrected_events[event_type].append([onset, offset, 1])  # Include offset
-                elif validation == 'rejected':
-                    corrected_events[event_type].append([onset, offset, 0])
+            for event in events:
+                onset = event[0]
+                offset = event[1] if len(event) > 1 else onset
+                status = self.timeline_canvas.onset_validations.get(onset, 'pending')
+                if status == 'accepted':
+                    score = 1
+                elif status == 'rejected':
+                    score = -1
+                elif status == 'edited':
+                    score = 0.5
                 else:
-                    # Keep pending onsets as is
-                    corrected_events[event_type].append([onset, offset, 1])
-                    
-        # Save to file
-        fname, _ = QFileDialog.getSaveFileName(self, 'Save Curated Onsets', '', 'JSON (*.json)')
+                    score = 0
+                export_events.append([onset, offset, event_type, status, score])
+
+        # Save to CSV file
+        fname, _ = QFileDialog.getSaveFileName(self, 'Save Validation', '', 'CSV (*.csv)')
         if fname:
-            with open(fname, 'w') as f:
-                json.dump(corrected_events, f, indent=2)
-            QMessageBox.information(self, "Success", f"Curated onsets saved to {fname}")
+            if not fname.endswith('.csv'):
+                fname += '.csv'
+            with open(fname, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['onset', 'offset', 'event_type', 'status', 'score'])
+                writer.writerows(export_events)
+            QMessageBox.information(self, "Success", f"Validation events saved to {fname}")
+
+            # Also save as numpy .npy file (same base name)
+            np_fname = fname.replace('.csv', '.npy')
+            np.save(np_fname, np.array(export_events, dtype=object))
             
     def save_performance_metrics(self):
         metrics = self.performance_metrics
